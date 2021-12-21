@@ -46,25 +46,61 @@ export function proxy (target: Object, sourceKey: string, key: string) {
   Object.defineProperty(target, key, sharedPropertyDefinition)
 }
 
+/**
+ * 两件事：
+ *   数据响应式的入口：分别处理 props、methods、data、computed、watch
+ *   优先级：props、methods、data、computed 对象中的属性不能出现重复，优先级和列出顺序一致
+ *         其中 computed 中的 key 不能和 props、data 中的 key 重复，methods 不影响
+ */
 export function initState (vm: Component) {
   vm._watchers = []
   const opts = vm.$options
+  // 处理 props 对象，为 props 对象的每个属性设置响应式，并将其代理到 vm 实例上
   if (opts.props) initProps(vm, opts.props)
+  // 处理 methos 对象，校验每个属性的值是否为函数、和 props 属性比对进行判重处理，最后得到 vm[key] = methods[key]
   if (opts.methods) initMethods(vm, opts.methods)
+  /**
+   * 做了三件事
+   *   1、判重处理，data 对象上的属性不能和 props、methods 对象上的属性相同
+   *   2、代理 data 对象上的属性到 vm 实例
+   *   3、为 data 对象的上数据设置响应式 
+   */
   if (opts.data) {
     initData(vm)
   } else {
     observe(vm._data = {}, true /* asRootData */)
   }
+    /**
+   * 三件事：
+   *   1、为 computed[key] 创建 watcher 实例，默认是懒执行
+   *   2、代理 computed[key] 到 vm 实例
+   *   3、判重，computed 中的 key 不能和 data、props 中的属性重复
+   */
   if (opts.computed) initComputed(vm, opts.computed)
   if (opts.watch && opts.watch !== nativeWatch) {
+     /**
+   * 三件事：
+   *   1、处理 watch 对象
+   *   2、为 每个 watch.key 创建 watcher 实例，key 和 watcher 实例可能是 一对多 的关系
+   *   3、如果设置了 immediate，则立即执行 回调函数
+   */
     initWatch(vm, opts.watch)
+
+
+     /**
+   * 其实到这里也能看出，computed 和 watch 在本质是没有区别的，都是通过 watcher 去实现的响应式
+   * 非要说有区别，那也只是在使用方式上的区别，简单来说：
+   *   1、watch：适用于当数据变化时执行异步或者开销较大的操作时使用，即需要长时间等待的操作可以放在 watch 中
+   *   2、computed：其中可以使用异步方法，但是没有任何意义。所以 computed 更适合做一些同步计算
+   */
   }
 }
 
+// 处理 props 对象，为 props 对象的每个属性设置响应式，并将其代理到 vm 实例上
 function initProps (vm: Component, propsOptions: Object) {
   const propsData = vm.$options.propsData || {}
   const props = vm._props = {}
+  // 缓存 props 的每个 key，性能优化
   // cache prop keys so that future props updates can iterate using Array
   // instead of dynamic object key enumeration.
   const keys = vm.$options._propKeys = []
@@ -86,6 +122,7 @@ function initProps (vm: Component, propsOptions: Object) {
           vm
         )
       }
+      // 为 props 的每个 key 是设置数据响应式
       defineReactive(props, key, value, () => {
         if (!isRoot && !isUpdatingChildComponent) {
           warn(
@@ -104,12 +141,19 @@ function initProps (vm: Component, propsOptions: Object) {
     // during Vue.extend(). We only need to proxy props defined at
     // instantiation here.
     if (!(key in vm)) {
+      // 代理 key 到 vm 对象上
       proxy(vm, `_props`, key)
     }
   }
   toggleObserving(true)
 }
 
+/**
+ * 做了三件事
+ *   1、判重处理，data 对象上的属性不能和 props、methods 对象上的属性相同
+ *   2、代理 data 对象上的属性到 vm 实例
+ *   3、为 data 对象的上数据设置响应式 
+ */
 function initData (vm: Component) {
   let data = vm.$options.data
   data = vm._data = typeof data === 'function'
@@ -148,6 +192,7 @@ function initData (vm: Component) {
       proxy(vm, `_data`, key)
     }
   }
+  // 为 data 对象上的数据设置响应式
   // observe data
   observe(data, true /* asRootData */)
 }
@@ -167,6 +212,20 @@ export function getData (data: Function, vm: Component): any {
 
 const computedWatcherOptions = { lazy: true }
 
+
+/**
+ * 三件事：
+ *   1、为 computed[key] 创建 watcher 实例，默认是懒执行
+ *   2、代理 computed[key] 到 vm 实例
+ *   3、判重，computed 中的 key 不能和 data、props 中的属性重复
+ * @param {*} computed = {
+ *   key1: function() { return xx },
+ *   key2: {
+ *     get: function() { return xx },
+ *     set: function(val) {}
+ *   }
+ * }
+ */
 function initComputed (vm: Component, computed: Object) {
   // $flow-disable-line
   const watchers = vm._computedWatchers = Object.create(null)
@@ -262,6 +321,15 @@ function createGetterInvoker(fn) {
   }
 }
 
+/**
+ * 做了以下三件事，其实最关键的就是第三件事情
+ *   1、校验 methoss[key]，必须是一个函数
+ *   2、判重
+ *         methods 中的 key 不能和 props 中的 key 相同
+ *         methos 中的 key 与 Vue 实例上已有的方法重叠，一般是一些内置方法，比如以 $ 和 _ 开头的方法
+ *   3、将 methods[key] 放到 vm 实例上，得到 vm[key] = methods[key]
+ */
+
 function initMethods (vm: Component, methods: Object) {
   const props = vm.$options.props
   for (const key in methods) {
@@ -290,6 +358,28 @@ function initMethods (vm: Component, methods: Object) {
   }
 }
 
+/**
+ * 处理 watch 对象的入口，做了两件事：
+ *   1、遍历 watch 对象
+ *   2、调用 createWatcher 函数
+ * @param {*} watch = {
+ *   'key1': function(val, oldVal) {},
+ *   'key2': 'this.methodName',
+ *   'key3': {
+ *     handler: function(val, oldVal) {},
+ *     deep: true
+ *   },
+ *   'key4': [
+ *     'this.methodNanme',
+ *     function handler1() {},
+ *     {
+ *       handler: function() {},
+ *       immediate: true
+ *     }
+ *   ],
+ *   'key.key5' { ... }
+ * }
+ */
 function initWatch (vm: Component, watch: Object) {
   for (const key in watch) {
     const handler = watch[key]
